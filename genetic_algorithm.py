@@ -5,11 +5,6 @@ from collections import Counter
 
 class GeneticScheduler:
     def __init__(self, weights, params):
-        """
-        Initialize the scheduler with penalty weights and GA parameters.
-        weights: dict with keys 'unavailable', 'double', 'overtime', 'under_min', 'fairness'
-        params: dict with keys 'pop_size', 'generations', 'mutation_rate', 'elitism'
-        """
         self.weights = weights
         self.params = params
         self.SHIFT_HOURS = 8
@@ -18,22 +13,19 @@ class GeneticScheduler:
         # Internal State
         self.employees = []
         self.name_to_id = {}
-        self.availability = {}  # Map: eid -> day -> shift -> bool
-        self.demand = {}        # Map: (day, shift, group) -> count
-        self.slots = []         # List of (day, shift, group) for every required slot
-        self.day_ranges = {}    # Map: day -> (start_idx, end_idx) in slots list
+        self.availability = {}  
+        self.demand = {}        
+        self.slots = []         
+        self.day_ranges = {}    
         self.emp_group = {}
         self.emp_min = {}
         self.emp_max = {}
         self.N_EMP = 0
 
     def load_and_process_data(self, avail_df, demand_df):
-        """Parses the raw DataFrames into internal structures."""
         # 1. Parse Employees
         self.employees = []
         self.name_to_id = {}
-        
-        # Clean headers just in case
         avail_df.columns = [c.strip() for c in avail_df.columns]
         demand_df.columns = [c.strip() for c in demand_df.columns]
         
@@ -81,7 +73,6 @@ class GeneticScheduler:
         group_cols = [c for c in demand_df.columns if str(c).strip().lower() not in ["weekday", "date"]]
         GROUPS = [str(g).strip() for g in group_cols]
 
-        # Precompute availability counts for proportional demand allocation
         avail_count = {(d, sh, g): 0 for d in self.DAYS for sh in self.SHIFTS for g in GROUPS}
         for eid in range(self.N_EMP):
             g = self.emp_group[eid]
@@ -105,10 +96,9 @@ class GeneticScheduler:
                     continue
                 if total == 0:
                     for sh in self.SHIFTS: self.demand[(day, sh, g)] = 0
-                    self.demand[(day, self.SHIFTS[0], g)] = req_total # Force assignment if no one avail
+                    self.demand[(day, self.SHIFTS[0], g)] = req_total 
                     continue
 
-                # Distribute demand across shifts based on availability
                 raw = [req_total * (c / total) for c in counts]
                 alloc = [int(x) for x in raw]
                 remainder = req_total - sum(alloc)
@@ -121,7 +111,7 @@ class GeneticScheduler:
                 for i, sh in enumerate(self.SHIFTS):
                     self.demand[(day, sh, g)] = alloc[i]
 
-        # 4. Build Slots (The "Genome" Structure)
+        # 4. Build Slots
         self.slots = []
         self.day_ranges = {}
         start = 0
@@ -188,18 +178,15 @@ class GeneticScheduler:
                 if eid in used: bad = True
                 if self.emp_group[eid] != g: bad = True
                 if not self.is_available(eid, day, sh): bad = True
-                
                 if not bad:
                     used.add(eid)
                     continue
-
                 cand = self.candidates_for(day, sh, g, used)
                 if cand:
                     cand_sorted = sorted(cand, key=lambda x: current_hours[x])
-                    new_eid = random.choice(cand_sorted[:3]) # pick from least worked
+                    new_eid = random.choice(cand_sorted[:3])
                 else:
                     new_eid = random.choice(list(range(self.N_EMP)))
-                
                 current_hours[new_eid] += self.SHIFT_HOURS
                 if genome[i] < self.N_EMP:
                      current_hours[genome[i]] = max(0, current_hours[genome[i]] - self.SHIFT_HOURS)
@@ -212,32 +199,25 @@ class GeneticScheduler:
         hours = [0] * self.N_EMP
         unavailable = 0
         wrong_group = 0
-        
         for i, eid in enumerate(genome):
             day, sh, g = self.slots[i]
             used_by_day[day].append(eid)
             hours[eid] += self.SHIFT_HOURS
             if self.emp_group[eid] != g: wrong_group += 1
             if not self.is_available(eid, day, sh): unavailable += 1
-
         double_day = 0
         for d, arr in used_by_day.items():
             c = Counter(arr)
             for _, cnt in c.items():
                 if cnt > 1: double_day += (cnt-1)
-
         overtime_hours = 0
         under_min_hours = 0
         for eid, h in enumerate(hours):
             if h > self.emp_max[eid]: overtime_hours += (h - self.emp_max[eid])
             if h < self.emp_min[eid]: under_min_hours += (self.emp_min[eid] - h)
-
         active_hours = [h for h in hours if h > 0]
-        if len(active_hours) > 1:
-            std_dev = np.std(active_hours)
-        else:
-            std_dev = 0
-
+        if len(active_hours) > 1: std_dev = np.std(active_hours)
+        else: std_dev = 0
         penalty = 0
         penalty += 6000 * wrong_group
         penalty += self.weights['unavailable'] * unavailable
@@ -245,15 +225,10 @@ class GeneticScheduler:
         penalty += self.weights['overtime'] * overtime_hours
         penalty += self.weights['under_min'] * under_min_hours
         penalty += self.weights['fairness'] * std_dev
-        
         return -penalty, {
-            "wrong_group": wrong_group, 
-            "unavailable": unavailable, 
-            "double_day": double_day, 
-            "overtime": overtime_hours, 
-            "under_min": under_min_hours, 
-            "std_dev": round(std_dev, 2),
-            "penalty": penalty
+            "wrong_group": wrong_group, "unavailable": unavailable, 
+            "double_day": double_day, "overtime": overtime_hours, 
+            "under_min": under_min_hours, "std_dev": round(std_dev, 2), "penalty": penalty
         }
 
     def mutate_robin_hood(self, genome):
@@ -262,29 +237,19 @@ class GeneticScheduler:
         emp_indices = list(range(self.N_EMP))
         random.shuffle(emp_indices)
         sorted_emps = sorted(emp_indices, key=lambda x: hours[x])
-        
-        poor_emp = sorted_emps[0]
-        rich_emp = sorted_emps[-1]
-        
+        poor_emp = sorted_emps[0]; rich_emp = sorted_emps[-1]
         if hours[rich_emp] <= hours[poor_emp]: return genome
-            
         rich_indices = [i for i, x in enumerate(genome) if x == rich_emp]
         if not rich_indices: return genome
-        
         slot_idx = random.choice(rich_indices)
         day, sh, g = self.slots[slot_idx]
-        
         d_range = self.day_ranges[day]
         emps_this_day = set(genome[d_range[0]:d_range[1]])
-        
         can_take = True
         if self.emp_group[poor_emp] != g: can_take = False
         if not self.is_available(poor_emp, day, sh): can_take = False
         if poor_emp in emps_this_day: can_take = False
-        
-        if can_take:
-            genome[slot_idx] = poor_emp
-            
+        if can_take: genome[slot_idx] = poor_emp
         return genome
 
     def day_block_crossover(self, p1, p2):
@@ -307,26 +272,19 @@ class GeneticScheduler:
         random.seed(7)
         pop = [self.repair(self.make_initial()) for _ in range(self.params['pop_size'])]
         best_g, best_f, best_det = None, float("-inf"), None
-
         for gen in range(1, self.params['generations'] + 1):
             fits, dets = [], []
             for g in pop:
                 f, d = self.evaluate(g)
                 fits.append(f)
                 dets.append(d)
-
             bi = max(range(len(pop)), key=lambda i: fits[i])
             if fits[bi] > best_f:
-                best_f = fits[bi]
-                best_g = pop[bi][:]
-                best_det = dets[bi]
-
+                best_f = fits[bi]; best_g = pop[bi][:]; best_det = dets[bi]
             if progress_callback:
                 progress_callback(gen, self.params['generations'], best_f, best_det.get('std_dev', 0))
-
             elite_idx = sorted(range(len(pop)), key=lambda i: fits[i], reverse=True)[:self.params['elitism']]
             new_pop = [pop[i][:] for i in elite_idx]
-
             while len(new_pop) < self.params['pop_size']:
                 p1 = self.tournament_select(pop, fits)
                 p2 = self.tournament_select(pop, fits)
@@ -334,10 +292,8 @@ class GeneticScheduler:
                 c1 = self.repair(self.mutate_robin_hood(c1))
                 c2 = self.repair(self.mutate_robin_hood(c2))
                 new_pop.append(c1)
-                if len(new_pop) < self.params['pop_size']:
-                    new_pop.append(c2)
+                if len(new_pop) < self.params['pop_size']: new_pop.append(c2)
             pop = new_pop
-
         return best_g, best_f, best_det
 
     # --- Result Formatting Helpers ---
@@ -355,34 +311,55 @@ class GeneticScheduler:
         violations = []
         used_by_day = {d: [] for d in self.DAYS}
         hours = [0] * self.N_EMP
-        
         for i, eid in enumerate(genome):
             day, sh, g = self.slots[i]
             emp_name = self.employees[eid]["name"]
             used_by_day[day].append(emp_name)
             hours[eid] += self.SHIFT_HOURS
-            
             if not self.is_available(eid, day, sh):
-                violations.append({"Type": "Unavailable", "Employee": emp_name, 
-                                   "Detail": f"Assigned {day} {sh}", "Penalty Cost": self.weights['unavailable']})
+                violations.append({"Type": "Unavailable", "Employee": emp_name, "Detail": f"Assigned {day} {sh}", "Penalty Cost": self.weights['unavailable']})
             if self.emp_group[eid] != g:
-                violations.append({"Type": "Wrong Group", "Employee": emp_name, 
-                                   "Detail": f"Assigned {g} but is {self.emp_group[eid]}", "Penalty Cost": 6000})
-
+                violations.append({"Type": "Wrong Group", "Employee": emp_name, "Detail": f"Assigned {g} but is {self.emp_group[eid]}", "Penalty Cost": 6000})
         for d, names in used_by_day.items():
             counts = Counter(names)
             for name, count in counts.items():
                 if count > 1:
-                    violations.append({"Type": "Double Shift", "Employee": name, 
-                                       "Detail": f"{count} shifts on {d}", "Penalty Cost": (count-1) * self.weights['double']})
-
+                    violations.append({"Type": "Double Shift", "Employee": name, "Detail": f"{count} shifts on {d}", "Penalty Cost": (count-1) * self.weights['double']})
         for eid, h in enumerate(hours):
             emp_name = self.employees[eid]["name"]
             if h > self.emp_max[eid]:
-                violations.append({"Type": "Overtime", "Employee": emp_name, 
-                                   "Detail": f"{h}h > {self.emp_max[eid]}h", "Penalty Cost": (h - self.emp_max[eid]) * self.weights['overtime']})
+                violations.append({"Type": "Overtime", "Employee": emp_name, "Detail": f"{h}h > {self.emp_max[eid]}h", "Penalty Cost": (h - self.emp_max[eid]) * self.weights['overtime']})
             if h < self.emp_min[eid]:
-                violations.append({"Type": "Under Min", "Employee": emp_name, 
-                                   "Detail": f"{h}h < {self.emp_min[eid]}h", "Penalty Cost": (self.emp_min[eid] - h) * self.weights['under_min']})
-                
+                violations.append({"Type": "Under Min", "Employee": emp_name, "Detail": f"{h}h < {self.emp_min[eid]}h", "Penalty Cost": (self.emp_min[eid] - h) * self.weights['under_min']})
         return pd.DataFrame(violations)
+
+    def audit_schedule(self):
+        """Pre-check logic to find impossible constraints."""
+        report = []
+        # Count total availability per (Group, Day)
+        avail_map = {} # (group, day) -> count
+        for eid in range(self.N_EMP):
+            g = self.emp_group[eid]
+            for d in self.DAYS:
+                # Check if available for ANY shift that day
+                is_free_any = False
+                for sh in self.SHIFTS:
+                    if self.is_available(eid, d, sh):
+                        is_free_any = True
+                        break
+                if is_free_any:
+                    avail_map[(g, d)] = avail_map.get((g, d), 0) + 1
+        
+        # Check against total demand
+        # Re-aggregate demand from slots to be safe
+        demand_agg = {} # (group, day) -> count
+        for (day, sh, g) in self.slots:
+            demand_agg[(g, day)] = demand_agg.get((g, day), 0) + 1
+            
+        for (g, d), req in demand_agg.items():
+            have = avail_map.get((g, d), 0)
+            if req > have:
+                report.append({
+                    "Day": d, "Group": g, "Need": req, "Have": have, "Missing": req - have
+                })
+        return pd.DataFrame(report)
