@@ -11,7 +11,6 @@ import io
 st.set_page_config(page_title="Genetic Scheduler: Balanced Edition", layout="wide")
 
 st.title("🧬 AI Employee Scheduler (Balanced)")
-st.markdown("I've restored the **Original Scoring** (so you'll see ~13k scores again) but kept the **Fairness Logic** to fix the Dexter workload issue.")
 
 # ==========================================
 # 2. SIDEBAR - PARAMETERS
@@ -438,8 +437,14 @@ if uploaded_file is not None:
     
     st.write("### 📂 Data Preview")
     c1, c2 = st.columns(2)
-    with c1: st.dataframe(avail_df.head(3), height=100)
-    with c2: st.dataframe(demand_df.head(3), height=100)
+    with c1: 
+        st.subheader("Availability")
+        # --- FIX: Removed .head(3) and increased height ---
+        st.dataframe(avail_df, height=400)
+    with c2: 
+        st.subheader("Demand")
+        # --- FIX: Removed .head(3) and increased height ---
+        st.dataframe(demand_df, height=400)
 
     # TABS FOR AUDIT VS RUN
     tab_audit, tab_run = st.tabs(["🛡️ Data Audit (Why is penalty high?)", "🚀 Optimizer"])
