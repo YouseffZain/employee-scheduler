@@ -1,67 +1,132 @@
-🧬 AI Employee Scheduler
-A powerful, intelligent scheduling tool that uses a Genetic Algorithm (GA) to solve the Nurse Scheduling Problem. It automatically generates optimal rosters while balancing business constraints, employee availability, and workload fairness.
-🔗 Live Demo: Click here to try the App
+🧬 AI Employee Scheduler (Genetic Algorithm)
+
+A robust, intelligent scheduling system that solves the Nurse Scheduling Problem (NSP) using an Evolutionary Genetic Algorithm. It optimizes for hard constraints (availability) and soft constraints (overtime, fairness) to generate the mathematically optimal roster.
+
+🚀 Live Demo
+
+Click below to test the application in your browser:
+
+
 🎯 Project Overview
-Scheduling employees is an NP-Hard optimization problem. This project allows managers to upload an Excel file containing employee availability and daily demand, and uses an evolutionary algorithm to "evolve" the perfect schedule.
-Unlike basic schedulers, this AI optimizes for Fairness. It actively prevents "shift hoarding" by using a variance penalty and a custom "Robin Hood" mutation operator to redistribute hours from overworked to underworked staff.
-✨ Key Features
-Modular Architecture: Business logic (genetic_algorithm.py) is completely separated from the presentation layer (app.py).
-Fairness Engine: Uses Standard Deviation calculations to ensure workloads are distributed evenly.
-🛡️ Data Audit: Built-in sanity checker detects "Impossible Shifts" (where Demand > Supply) before the AI even starts.
-🔍 Penalty Detective: A post-processing engine that explains exactly why a schedule received a certain score (e.g., "Dexter worked 8 hours overtime").
-Dynamic Configuration: Adjust population size, mutation rates, and penalty weights on the fly.
-🏗️ Project Structure
-This project follows the Separation of Concerns principle:
-genetic_algorithm.py ( The Logic )
-Contains the GeneticScheduler class.
-Handles data parsing, population initialization, crossover, mutation, and fitness evaluation.
-Contains the custom "Robin Hood Mutation" logic.
-app.py ( The Interface )
-A clean Streamlit dashboard.
-Handles file uploads, sidebar configuration, and data visualization.
-Calls the scheduler class to run computations.
-⚙️ How It Works (The Algorithm)
-The solver uses a standard Genetic Algorithm lifecycle with custom operators:
-Initialization: Creates a population of random schedules (respecting basic availability).
-Evaluation (Fitness Function): Calculates a "Penalty Score" based on:
+
+Scheduling employees while respecting individual availability, group requirements, and labor laws is an NP-Hard optimization problem. This project automates that process.
+
+Unlike standard schedulers, this engine prioritizes Workload Fairness. It uses a custom "Robin Hood" mutation operator to actively redistribute hours from overworked employees to underutilized ones, ensuring no single employee (e.g., "Dexter") is unfairly burdened.
+
+Key Features
+
+🧠 Genetic Optimization: Evolve schedules over hundreds of generations to minimize penalties.
+
+⚖️ Fairness Engine: A variance-based penalty system that forces even distribution of shifts.
+
+🛡️ Data Audit: Pre-computation checks to detect "Impossible Shifts" (Demand > Supply) before execution.
+
+🔍 Penalty Detective: A post-processing analysis tool that explains exactly why a schedule received a specific score (e.g., "3 Double Shifts detected").
+
+modular Architecture: Strict separation between the UI (app.py) and the algorithmic logic (genetic_algorithm.py).
+
+📂 Repository Structure
+
+This project follows the Separation of Concerns software design principle:
+
+File
+
+Description
+
+genetic_algorithm.py
+
+The Core Engine. Contains the GeneticScheduler class. Handles population initialization, crossover, mutation logic, and fitness evaluation.
+
+app.py
+
+The Interface. A Streamlit dashboard that handles file I/O, visualization, and user configuration. It imports the engine as a module.
+
+requirements.txt
+
+Dependencies required to run the project.
+
+Employee Schedule.xlsx
+
+Sample dataset for testing.
+
+⚙️ How the Algorithm Works
+
+The solver operates on a population of potential schedules ("Chromosomes") and evolves them using the following pipeline:
+
+Initialization:
+
+Generates N random schedules.
+
+Smart Init: Prefers assigning shifts to employees with the lowest current hours to start with a balanced base.
+
+Evaluation (Fitness Function):
+
+Calculates a "Penalty Score" based on weighted constraints:
+
 Hard Constraints: Unavailable staff (Penalty: 2500), Double Shifts (Penalty: 1800).
+
 Soft Constraints: Overtime (Penalty: 80/hr), Under-utilization (Penalty: 30/hr).
-Fairness: Variance in hours worked across the team.
-Selection: Uses Tournament Selection to pick the best schedules.
-Crossover: Uses "Day Block Crossover" to swap whole days between schedules.
-Mutation:
-Random Mutation: Randomly reassigns a slot.
-Robin Hood Mutation: Specifically targets the most overworked employee and moves their shift to the most underworked employee.
-Elitism: Preserves the top N solutions to guarantee improvement.
-🚀 Local Installation
+
+Fairness: Standard Deviation of hours worked across the team.
+
+Selection:
+
+Uses Tournament Selection to pick the fittest parents for the next generation.
+
+Crossover:
+
+Day-Block Crossover: Swaps entire daily schedules between two parents to preserve valid daily structures.
+
+Mutation (The "Robin Hood" Operator):
+
+Standard mutation randomly swaps a shift.
+
+Robin Hood Mutation: Specifically identifies the employee with the most hours and attempts to move one of their shifts to the employee with the fewest hours. This aggressively converges towards fairness.
+
+Elitism:
+
+The top k schedules are copied unchanged to the next generation to guarantee monotonically non-decreasing performance.
+
+🛠️ Local Installation
+
+To run this project on your local machine:
+
 Clone the repository
+
 git clone [https://github.com/your-username/employee-scheduler.git](https://github.com/your-username/employee-scheduler.git)
 cd employee-scheduler
 
 
 Install dependencies
+
 pip install pandas numpy streamlit xlsxwriter openpyxl
 
 
 Run the App
+
 streamlit run app.py
 
 
 📊 Input Data Format
-The app expects an Excel file (.xlsx) with two specific sheets:
-Availibility: Columns for Name, Group code, Min_Hours, Max_Hours, and days of the week (Monday, Tuesday...) containing "A" (Available) or "NW" (No Work).
-Demand: Columns for Weekday and group names (e.g., a, b, c) specifying how many people are needed per group per day.
-🛠️ Configuration Guide
-Parameter
-Description
-Generations
-Rounds of evolution. Higher = better results, slower speed.
-Mutation Rate
-Probability of random changes. Keeps the AI from getting "stuck."
-Fairness Penalty
-The "Anti-Burnout" slider. High values force even workload distribution.
-Overtime Penalty
-Cost per hour of exceeding Max_Hours.
 
-License
+The application expects an Excel file (.xlsx) with two sheets:
+
+Availibility
+
+Columns: Name, Group code, Min_Hours, Max_Hours.
+
+Days: Columns for Monday, Tuesday, etc., containing "A" (Available) or "NW" (No Work).
+
+Demand
+
+Columns: Weekday and Group Columns (e.g., a, b, c).
+
+Values: Integers representing how many staff members are needed for that group on that day.
+
+📸 Screenshots
+
+(Optional: Add screenshots of your "Data Audit" tab or "Results Dashboard" here to make the repo look even better)
+
+📝 License
+
 This project is open-source and available under the MIT License.
