@@ -30,12 +30,12 @@ st.sidebar.subheader("⚖️ Penalty Weights")
 W_UNAVAILABLE = st.sidebar.number_input("Unavailable Penalty", value=2500)
 W_DOUBLE_DAY = st.sidebar.number_input("Double Shift Penalty", value=1800)
 W_OVERTIME = st.sidebar.number_input("Overtime Penalty", value=80)
+W_UNDER_MIN = st.sidebar.number_input("Under Min Hours Penalty", value=30)
 
 # ==========================================
-# 3. HELPER FUNCTIONS (Your Logic Adapted)
+# 3. HELPER FUNCTIONS
 # ==========================================
 
-# Caching this prevents reloading data on every interaction unless file changes
 @st.cache_data 
 def load_data(file):
     xls = pd.ExcelFile(file)
@@ -46,10 +46,8 @@ def load_data(file):
     demand_df.columns = [c.strip() for c in demand_df.columns]
     return avail_df, demand_df
 
-def run_optimization(avail_df, demand_df, progress_bar):
-    """
-    This function contains your core GA logic.
-    """
+# Updated function signature to accept weights
+def run_optimization(avail_df, demand_df, progress_bar, w_unavailable, w_double_day, w_overtime, w_under_min):
     random.seed(7)
     SHIFT_HOURS = 8
     DAYS = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"]
@@ -231,10 +229,10 @@ def run_optimization(avail_df, demand_df, progress_bar):
 
         penalty = 0
         penalty += 6000*wrong_group
-        penalty += W_UNAVAILABLE*unavailable
-        penalty += W_DOUBLE_DAY*double_day
-        penalty += W_OVERTIME*overtime_hours
-        penalty += W_UNDER_MIN*under_min_hours
+        penalty += w_unavailable * unavailable      # Uses passed argument
+        penalty += w_double_day * double_day        # Uses passed argument
+        penalty += w_overtime * overtime_hours      # Uses passed argument
+        penalty += w_under_min * under_min_hours    # Uses passed argument
         
         return -penalty, {
             "wrong_group": wrong_group, "unavailable": unavailable, 
@@ -343,7 +341,16 @@ if uploaded_file is not None:
     if st.button("🚀 Generate Optimized Schedule"):
         progress = st.progress(0)
         try:
-            long_df, pivot_df, details = run_optimization(avail_df, demand_df, progress)
+            # Pass all 4 weights from sidebar to the function
+            long_df, pivot_df, details = run_optimization(
+                avail_df, 
+                demand_df, 
+                progress, 
+                W_UNAVAILABLE, 
+                W_DOUBLE_DAY, 
+                W_OVERTIME, 
+                W_UNDER_MIN
+            )
             
             # Save to session state so it persists
             st.session_state['result_long'] = long_df
