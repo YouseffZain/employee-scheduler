@@ -8,10 +8,10 @@ import io
 # ==========================================
 # 1. PAGE CONFIGURATION
 # ==========================================
-st.set_page_config(page_title="Genetic Scheduler Pro", layout="wide")
+st.set_page_config(page_title="Genetic Scheduler: Audit Edition", layout="wide")
 
-st.title("🧬 AI Employee Scheduler (Algorithmic Fairness)")
-st.markdown("This version uses **Smart Initialization** and **Robin Hood Mutation** to actively balance workloads.")
+st.title("🧬 AI Employee Scheduler (with Data Audit)")
+st.markdown("Use the **Data Audit** tab below to check if your schedule is actually solvable before running the AI.")
 
 # ==========================================
 # 2. SIDEBAR - PARAMETERS
@@ -28,7 +28,7 @@ ELITISM = st.sidebar.number_input("Elitism Count", 1, 10, 3)
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("⚖️ Penalty Weights")
-W_UNAVAILABLE = st.sidebar.number_input("Unavailable Penalty", value=5000)
+W_UNAVAILABLE = st.sidebar.number_input("Unavailable Penalty", value=5000, help="Penalty for scheduling someone when they said 'No'.")
 W_DOUBLE_DAY = st.sidebar.number_input("Double Shift Penalty", value=2000)
 W_OVERTIME = st.sidebar.number_input("Overtime Penalty", value=100)
 W_UNDER_MIN = st.sidebar.number_input("Under Min Hours Penalty", value=50)
@@ -46,6 +46,88 @@ def load_data(file):
     avail_df.columns = [c.strip() for c in avail_df.columns]
     demand_df.columns = [c.strip() for c in demand_df.columns]
     return avail_df, demand_df
+
+# --- NEW: DATA AUDIT FUNCTION ---
+def run_audit(avail_df, demand_df):
+    report = []
+    
+    # 1. Parse Data (Simplified version of the main parser)
+    DAYS = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"]
+    
+    # Parse Employees
+    employees = []
+    for i, row in avail_df.iterrows():
+        employees.append({
+            "name": str(row["Name"]).strip(),
+            "group": str(row.get("Group code", "all")).strip(),
+            "max_hours": int(row.get("Max_Hours", 40)) if pd.notna(row.get("Max_Hours", 40)) else 40
+        })
+    df_emp = pd.DataFrame(employees)
+    
+    # Parse Availability
+    # We need a map of (Group, Day) -> Count of Available People
+    avail_map = {(g, d): 0 for g in df_emp['group'].unique() for d in DAYS}
+    
+    for i, row in avail_df.iterrows():
+        g = str(row.get("Group code", "all")).strip()
+        for d in DAYS:
+            val = str(row.get(d, "")).strip().upper()
+            if val == "A":
+                if (g, d) in avail_map:
+                    avail_map[(g, d)] += 1
+                else:
+                    avail_map[(g, d)] = 1
+
+    # Parse Demand
+    if demand_df.iloc[0].astype(str).str.contains("Weekday", case=False).any():
+        demand_df.columns = demand_df.iloc[0].astype(str).tolist()
+        demand_df = demand_df.iloc[1:].reset_index(drop=True)
+    
+    weekday_col = next((c for c in demand_df.columns if str(c).strip().lower() == "weekday"), demand_df.columns[0])
+    group_cols = [c for c in demand_df.columns if str(c).strip().lower() not in ["weekday", "date"]]
+    
+    total_demand_slots = 0
+    
+    # CHECK 1: Day-by-Day Supply vs Demand
+    for _, row in demand_df.iterrows():
+        day = str(row[weekday_col]).strip()
+        if day not in DAYS: continue
+        
+        for g in group_cols:
+            group_name = str(g).strip()
+            req = int(row.get(g, 0) if pd.notna(row.get(g, 0)) else 0)
+            total_demand_slots += req
+            
+            available_count = avail_map.get((group_name, day), 0)
+            
+            if req > available_count:
+                report.append({
+                    "Type": "CRITICAL SHORTAGE",
+                    "Day": day,
+                    "Group": group_name,
+                    "Required": req,
+                    "Available": available_count,
+                    "Deficit": req - available_count,
+                    "Est. Penalty": (req - available_count) * W_UNAVAILABLE
+                })
+
+    # CHECK 2: Global Hours
+    total_supply_hours = df_emp['max_hours'].sum()
+    total_demand_hours = total_demand_slots * 8 # Assuming 8hr shifts
+    
+    if total_demand_hours > total_supply_hours:
+        report.append({
+            "Type": "GLOBAL HOURS SHORTAGE",
+            "Day": "ALL",
+            "Group": "ALL",
+            "Required": total_demand_hours,
+            "Available": total_supply_hours,
+            "Deficit": total_demand_hours - total_supply_hours,
+            "Est. Penalty": "Massive Overtime"
+        })
+        
+    return pd.DataFrame(report), total_demand_hours, total_supply_hours
+
 
 def run_optimization(avail_df, demand_df, progress_bar, w_unavailable, w_double_day, w_overtime, w_under_min, w_fairness):
     random.seed(7)
@@ -170,25 +252,20 @@ def run_optimization(avail_df, demand_df, progress_bar, w_unavailable, w_double_
         if c3: return c3
         return list(range(N_EMP))
 
-    # [ALGO UPGRADE 1] Least-Loaded Initialization
-    # Instead of random shuffling, pick the candidate who has the LEAST hours so far.
     def make_initial():
         genome = [0]*NUM_SLOTS
         used_by_day = {d:set() for d in DAYS}
-        hours = [0]*N_EMP # Track hours dynamically during creation
+        hours = [0]*N_EMP 
         
         for i,(day,sh,g) in enumerate(slots):
             cand = candidates_for(day, sh, g, used_by_day[day])
-            
             if cand:
-                # Find candidate with minimum current hours
-                # Add slight randomness to avoid identical populations
+                # Least loaded first
                 min_h = min(hours[c] for c in cand)
                 best_candidates = [c for c in cand if hours[c] <= min_h + SHIFT_HOURS] 
                 pick = random.choice(best_candidates)
             else:
-                pick = random.choice(range(N_EMP)) # Fallback
-                
+                pick = random.choice(range(N_EMP))
             genome[i] = pick
             used_by_day[day].add(pick)
             hours[pick] += SHIFT_HOURS
@@ -200,18 +277,14 @@ def run_optimization(avail_df, demand_df, progress_bar, w_unavailable, w_double_
             h[eid] += SHIFT_HOURS
         return h
 
-    # [ALGO UPGRADE 2] Smart Repair
-    # When filling a gap, prefer the person who is most "behind" on their hours.
     def repair(genome):
         current_hours = get_hours_array(genome)
-        
         for d in DAYS:
             used = set()
             a,b = day_ranges[d]
             for i in range(a,b):
                 day,sh,g = slots[i]
                 eid = genome[i]
-                
                 bad = False
                 if eid in used: bad = True
                 if emp_group[eid] != g: bad = True
@@ -221,25 +294,18 @@ def run_optimization(avail_df, demand_df, progress_bar, w_unavailable, w_double_
                     used.add(eid)
                     continue
 
-                # We need a new person
                 cand = candidates_for(day, sh, g, used)
-                
                 if cand:
-                    # Sort candidates by current workload (ascending)
                     cand_sorted = sorted(cand, key=lambda x: current_hours[x])
-                    # Pick from the top 3 least busy people
                     new_eid = random.choice(cand_sorted[:3])
                 else:
                     new_eid = random.choice(list(range(N_EMP)))
                 
-                # Update tracking (heuristic only)
                 current_hours[new_eid] += SHIFT_HOURS
                 if genome[i] < N_EMP:
                      current_hours[genome[i]] = max(0, current_hours[genome[i]] - SHIFT_HOURS)
-                
                 genome[i] = new_eid
                 used.add(new_eid)
-                
         return genome
 
     def evaluate(genome):
@@ -267,7 +333,6 @@ def run_optimization(avail_df, demand_df, progress_bar, w_unavailable, w_double_
             if h > emp_max[eid]: overtime_hours += (h - emp_max[eid])
             if h < emp_min[eid]: under_min_hours += (emp_min[eid] - h)
 
-        # Standard Deviation Calculation
         active_hours = [h for h in hours if h > 0]
         if len(active_hours) > 1:
             std_dev = np.std(active_hours)
@@ -307,48 +372,34 @@ def run_optimization(avail_df, demand_df, progress_bar, w_unavailable, w_double_
         c1[cut_pos:], c2[cut_pos:] = c2[cut_pos:], c1[cut_pos:]
         return c1, c2
 
-    # [ALGO UPGRADE 3] Robin Hood Mutation
-    # Take from the rich (overworked), give to the poor (underworked).
     def mutate_robin_hood(genome):
         if random.random() > MUTATION_RATE: return genome
-        
-        # 1. Calculate current hours
         hours = get_hours_array(genome)
-        
-        # 2. Identify "Rich" (Overworked) and "Poor" (Underworked)
-        # We need indices of employees, sorted by hours
         emp_indices = list(range(N_EMP))
-        random.shuffle(emp_indices) # Shuffle first to break ties randomly
+        random.shuffle(emp_indices)
         sorted_emps = sorted(emp_indices, key=lambda x: hours[x])
         
-        poor_emp = sorted_emps[0] # Lowest hours
-        rich_emp = sorted_emps[-1] # Highest hours
+        poor_emp = sorted_emps[0]
+        rich_emp = sorted_emps[-1]
         
-        if hours[rich_emp] <= hours[poor_emp]:
-            return genome # Population is perfectly balanced, no op
+        if hours[rich_emp] <= hours[poor_emp]: return genome
             
-        # 3. Find a shift belonging to Rich Emp
         rich_indices = [i for i, x in enumerate(genome) if x == rich_emp]
         if not rich_indices: return genome
         
-        # Try to give one of Rich Emp's shifts to Poor Emp
         slot_idx = random.choice(rich_indices)
         day, sh, g = slots[slot_idx]
         
-        # Check if Poor Emp can take this shift (Availability & Group)
-        # We also check if Poor Emp is already working that day to avoid double shift
-        
-        # Get set of employees working on this specific day in the genome
         d_range = day_ranges[day]
         emps_this_day = set(genome[d_range[0]:d_range[1]])
         
         can_take = True
         if emp_group[poor_emp] != g: can_take = False
         if not is_available(poor_emp, day, sh): can_take = False
-        if poor_emp in emps_this_day: can_take = False # Avoid double shift creation
+        if poor_emp in emps_this_day: can_take = False
         
         if can_take:
-            genome[slot_idx] = poor_emp # SWAP!
+            genome[slot_idx] = poor_emp
             
         return genome
 
@@ -382,18 +433,14 @@ def run_optimization(avail_df, demand_df, progress_bar, w_unavailable, w_double_
             p1 = tournament_select(pop, fits)
             p2 = tournament_select(pop, fits)
             c1, c2 = day_block_crossover(p1, p2)
-            
-            # Use the new Robin Hood Mutation
             c1 = repair(mutate_robin_hood(c1))
             c2 = repair(mutate_robin_hood(c2))
-            
             new_pop.append(c1)
             if len(new_pop) < POP_SIZE: new_pop.append(c2)
         pop = new_pop
 
     status_text.empty()
     
-    # --- 4. FORMAT OUTPUT ---
     rows = []
     for i,eid in enumerate(best_g):
         day, sh, g = slots[i]
@@ -422,30 +469,56 @@ if uploaded_file is not None:
     
     st.write("### 📂 Data Preview")
     c1, c2 = st.columns(2)
-    with c1: st.dataframe(avail_df.head(), height=150)
-    with c2: st.dataframe(demand_df.head(), height=150)
+    with c1: st.dataframe(avail_df.head(3), height=100)
+    with c2: st.dataframe(demand_df.head(3), height=100)
 
-    if st.button("🚀 Generate Optimized Schedule"):
-        progress = st.progress(0)
-        try:
-            long_df, pivot_df, details = run_optimization(
-                avail_df, 
-                demand_df, 
-                progress, 
-                W_UNAVAILABLE, 
-                W_DOUBLE_DAY, 
-                W_OVERTIME, 
-                W_UNDER_MIN,
-                W_FAIRNESS
-            )
+    # TABS FOR AUDIT VS RUN
+    tab_audit, tab_run = st.tabs(["🛡️ Data Audit (Run First)", "🚀 Optimizer"])
+    
+    with tab_audit:
+        st.subheader("Sanity Check: Is this schedule solvable?")
+        if st.button("Run Data Audit"):
+            report_df, req_hrs, avail_hrs = run_audit(avail_df, demand_df)
             
-            st.session_state['result_long'] = long_df
-            st.session_state['result_pivot'] = pivot_df
-            st.session_state['details'] = details
-            st.success("Optimization Complete!")
+            # Metrics
+            k1, k2, k3 = st.columns(3)
+            k1.metric("Total Required Hours", req_hrs)
+            k2.metric("Total Available Hours", avail_hrs)
+            diff = avail_hrs - req_hrs
+            k3.metric("Buffer Hours", diff, delta_color="normal" if diff >= 0 else "inverse")
             
-        except Exception as e:
-            st.error(f"An error occurred: {e}")
+            if diff < 0:
+                st.error(f"🚨 IMPOSSIBLE: You need {req_hrs} hours but staff can only give {avail_hrs}.")
+            
+            if not report_df.empty:
+                st.warning("⚠️ CRITICAL SHORTAGES DETECTED")
+                st.dataframe(report_df, use_container_width=True)
+                st.write("These shortages will cause 'Unavailable Penalties' no matter how long the AI runs. Please fix the data or hire more staff!")
+            else:
+                st.success("✅ Data looks feasible! No obvious day-by-day shortages detected.")
+
+    with tab_run:
+        if st.button("🚀 Start Optimization"):
+            progress = st.progress(0)
+            try:
+                long_df, pivot_df, details = run_optimization(
+                    avail_df, 
+                    demand_df, 
+                    progress, 
+                    W_UNAVAILABLE, 
+                    W_DOUBLE_DAY, 
+                    W_OVERTIME, 
+                    W_UNDER_MIN,
+                    W_FAIRNESS
+                )
+                
+                st.session_state['result_long'] = long_df
+                st.session_state['result_pivot'] = pivot_df
+                st.session_state['details'] = details
+                st.success("Optimization Complete!")
+                
+            except Exception as e:
+                st.error(f"An error occurred: {e}")
 
 # ==========================================
 # 5. RESULTS DISPLAY
@@ -462,7 +535,7 @@ if 'result_long' in st.session_state:
     m2.metric("Unavailable", det['unavailable'])
     m3.metric("Double Shifts", det['double_day'])
     m4.metric("Overtime Hrs", det['overtime'])
-    m5.metric("Hr Variance (StdDev)", f"{det.get('std_dev',0):.2f}")
+    m5.metric("Hr Variance", f"{det.get('std_dev',0):.2f}")
     
     tab1, tab2, tab3 = st.tabs(["📅 Weekly View", "📋 List View", "📈 Employee Stats"])
     
