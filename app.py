@@ -1,12 +1,12 @@
 import streamlit as st
 import pandas as pd
 import io
-from genetic_algorithm import GeneticScheduler # Importing your new class
+from genetic_algorithm import GeneticScheduler
 
 # ==========================================
 # 1. PAGE CONFIGURATION
 # ==========================================
-st.set_page_config(page_title="Genetic Scheduler: Modular Edition", layout="wide")
+st.set_page_config(page_title="Genetic Scheduler: Modular & Audited", layout="wide")
 st.title("🧬 AI Employee Scheduler")
 
 # ==========================================
@@ -45,55 +45,70 @@ if uploaded_file:
     c1, c2 = st.columns(2)
     with c1: st.dataframe(avail_df, height=300)
     with c2: st.dataframe(demand_df, height=300)
+    
+    # Initialize Scheduler early so we can audit
+    scheduler = GeneticScheduler(weights, params)
+    scheduler.load_and_process_data(avail_df, demand_df)
 
-    if st.button("🚀 Run Optimizer"):
-        # Initialize Scheduler with config
-        scheduler = GeneticScheduler(weights, params)
-        
-        # Load Data
-        scheduler.load_and_process_data(avail_df, demand_df)
-        
-        # Define callback for progress bar
-        prog_bar = st.progress(0)
-        status_text = st.empty()
-        
-        def update_ui(gen, total_gen, fit, std_dev):
-            prog_bar.progress(gen / total_gen)
-            if gen % 10 == 0:
-                status_text.text(f"Gen {gen}/{total_gen} | Fitness: {fit:.0f} | Fairness Dev: {std_dev:.2f}")
+    tab_audit, tab_run = st.tabs(["🛡️ Data Audit", "🚀 Optimizer"])
 
-        # Run Algorithm
-        best_genome, best_fit, best_det = scheduler.optimize(progress_callback=update_ui)
-        
-        # Get Results
-        long_df = scheduler.get_results_dataframe(best_genome)
-        explain_df = scheduler.explain_penalties(best_genome)
-        
-        # Build Pivot
-        DAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
-        pivot_df = long_df.groupby(["day","shift","group"])["employee_name"].apply(lambda x: ", ".join(x.tolist())).reset_index()
-        pivot_df["col"] = pivot_df["group"].astype(str) + "_" + pivot_df["shift"].astype(str)
-        pivot_df = pivot_df.pivot(index="day", columns="col", values="employee_name").reindex(DAYS).fillna("")
-        
-        # Display
-        st.success("Optimization Complete!")
-        
-        tab1, tab2, tab3, tab4 = st.tabs(["📅 Weekly", "📋 List", "📈 Stats", "🔍 Explanations"])
-        
-        with tab1:
-            st.dataframe(pivot_df, use_container_width=True)
-            buffer = io.BytesIO()
-            with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
-                pivot_df.to_excel(writer, sheet_name='Schedule')
-            st.download_button("Download Excel", buffer, "schedule.xlsx")
+    with tab_audit:
+        st.subheader("Pre-Optimization Sanity Check")
+        if st.button("Run Data Audit"):
+            report_df = scheduler.audit_schedule()
             
-        with tab2: st.dataframe(long_df, use_container_width=True)
-        
-        with tab3:
-            counts = long_df['employee_name'].value_counts().reset_index()
-            counts.columns = ['Employee', 'Shifts']
-            counts['Hours'] = counts['Shifts'] * 8
-            st.bar_chart(counts, x='Employee', y='Hours')
+            if not report_df.empty:
+                st.error(f"🚨 FOUND {len(report_df)} IMPOSSIBLE SHIFTS (Supply < Demand)")
+                st.write("The AI cannot solve these without penalties because you don't have enough staff.")
+                st.dataframe(report_df, use_container_width=True)
+            else:
+                st.success("✅ Data looks feasible! No obvious day-by-day shortages.")
+
+    with tab_run:
+        if st.button("🚀 Run Optimizer"):
+            # Define callback for progress bar
+            prog_bar = st.progress(0)
+            status_text = st.empty()
             
-        with tab4:
-            st.dataframe(explain_df, use_container_width=True)
+            def update_ui(gen, total_gen, fit, std_dev):
+                prog_bar.progress(gen / total_gen)
+                if gen % 10 == 0:
+                    status_text.text(f"Gen {gen}/{total_gen} | Fitness: {fit:.0f} | Fairness Dev: {std_dev:.2f}")
+
+            # Run Algorithm
+            best_genome, best_fit, best_det = scheduler.optimize(progress_callback=update_ui)
+            
+            # Get Results
+            long_df = scheduler.get_results_dataframe(best_genome)
+            explain_df = scheduler.explain_penalties(best_genome)
+            
+            # Build Pivot
+            DAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
+            pivot_df = long_df.groupby(["day","shift","group"])["employee_name"].apply(lambda x: ", ".join(x.tolist())).reset_index()
+            pivot_df["col"] = pivot_df["group"].astype(str) + "_" + pivot_df["shift"].astype(str)
+            pivot_df = pivot_df.pivot(index="day", columns="col", values="employee_name").reindex(DAYS).fillna("")
+            
+            # Display
+            st.success("Optimization Complete!")
+            
+            r1, r2, r3, r4 = st.tabs(["📅 Weekly", "📋 List", "📈 Stats", "🔍 Explanations"])
+            
+            with r1:
+                st.dataframe(pivot_df, use_container_width=True)
+                buffer = io.BytesIO()
+                with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
+                    pivot_df.to_excel(writer, sheet_name='Schedule')
+                st.download_button("Download Excel", buffer, "schedule.xlsx")
+                
+            with r2: st.dataframe(long_df, use_container_width=True)
+            
+            with r3:
+                counts = long_df['employee_name'].value_counts().reset_index()
+                counts.columns = ['Employee', 'Shifts']
+                counts['Hours'] = counts['Shifts'] * 8
+                st.bar_chart(counts, x='Employee', y='Hours')
+                
+            with r4:
+                st.dataframe(explain_df, use_container_width=True)
+                if not explain_df.empty:
+                    st.warning(f"Total Penalty Points Explained: {explain_df['Penalty Cost'].sum()}")
