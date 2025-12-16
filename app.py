@@ -1,16 +1,17 @@
 import streamlit as st
 import pandas as pd
 import random
+import numpy as np
 from collections import Counter
 import io
 
 # ==========================================
 # 1. PAGE CONFIGURATION
 # ==========================================
-st.set_page_config(page_title="Genetic Scheduler", layout="wide")
+st.set_page_config(page_title="Genetic Scheduler Pro", layout="wide")
 
-st.title("🧬 AI Employee Scheduler")
-st.markdown("Upload your **Employee Schedule.xlsx** and let the Genetic Algorithm find the optimal roster.")
+st.title("🧬 AI Employee Scheduler (Algorithmic Fairness)")
+st.markdown("This version uses **Smart Initialization** and **Robin Hood Mutation** to actively balance workloads.")
 
 # ==========================================
 # 2. SIDEBAR - PARAMETERS
@@ -20,17 +21,18 @@ st.sidebar.header("⚙️ Algorithm Settings")
 uploaded_file = st.sidebar.file_uploader("Upload Schedule Excel", type=["xlsx"])
 
 # Dynamic Parameters
-GENERATIONS = st.sidebar.slider("Generations", 50, 1000, 250)
-POP_SIZE = st.sidebar.slider("Population Size", 50, 500, 120)
-MUTATION_RATE = st.sidebar.slider("Mutation Rate", 0.0, 1.0, 0.25)
+GENERATIONS = st.sidebar.slider("Generations", 50, 1000, 300)
+POP_SIZE = st.sidebar.slider("Population Size", 50, 500, 150)
+MUTATION_RATE = st.sidebar.slider("Mutation Rate", 0.0, 1.0, 0.3)
 ELITISM = st.sidebar.number_input("Elitism Count", 1, 10, 3)
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("⚖️ Penalty Weights")
-W_UNAVAILABLE = st.sidebar.number_input("Unavailable Penalty", value=2500)
-W_DOUBLE_DAY = st.sidebar.number_input("Double Shift Penalty", value=1800)
-W_OVERTIME = st.sidebar.number_input("Overtime Penalty", value=80)
-W_UNDER_MIN = st.sidebar.number_input("Under Min Hours Penalty", value=30)
+W_UNAVAILABLE = st.sidebar.number_input("Unavailable Penalty", value=5000)
+W_DOUBLE_DAY = st.sidebar.number_input("Double Shift Penalty", value=2000)
+W_OVERTIME = st.sidebar.number_input("Overtime Penalty", value=100)
+W_UNDER_MIN = st.sidebar.number_input("Under Min Hours Penalty", value=50)
+W_FAIRNESS = st.sidebar.number_input("Fairness (Variance) Penalty", value=150)
 
 # ==========================================
 # 3. HELPER FUNCTIONS
@@ -41,13 +43,11 @@ def load_data(file):
     xls = pd.ExcelFile(file)
     avail_df = pd.read_excel(xls, sheet_name="Availibility")
     demand_df = pd.read_excel(xls, sheet_name="Demand")
-    # Clean columns immediately
     avail_df.columns = [c.strip() for c in avail_df.columns]
     demand_df.columns = [c.strip() for c in demand_df.columns]
     return avail_df, demand_df
 
-# Updated function signature to accept weights
-def run_optimization(avail_df, demand_df, progress_bar, w_unavailable, w_double_day, w_overtime, w_under_min):
+def run_optimization(avail_df, demand_df, progress_bar, w_unavailable, w_double_day, w_overtime, w_under_min, w_fairness):
     random.seed(7)
     SHIFT_HOURS = 8
     DAYS = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"]
@@ -170,37 +170,76 @@ def run_optimization(avail_df, demand_df, progress_bar, w_unavailable, w_double_
         if c3: return c3
         return list(range(N_EMP))
 
+    # [ALGO UPGRADE 1] Least-Loaded Initialization
+    # Instead of random shuffling, pick the candidate who has the LEAST hours so far.
     def make_initial():
         genome = [0]*NUM_SLOTS
         used_by_day = {d:set() for d in DAYS}
-        hours = [0]*N_EMP
+        hours = [0]*N_EMP # Track hours dynamically during creation
+        
         for i,(day,sh,g) in enumerate(slots):
             cand = candidates_for(day, sh, g, used_by_day[day])
-            random.shuffle(cand)
-            pick = min(cand[:min(8,len(cand))], key=lambda x: hours[x])
+            
+            if cand:
+                # Find candidate with minimum current hours
+                # Add slight randomness to avoid identical populations
+                min_h = min(hours[c] for c in cand)
+                best_candidates = [c for c in cand if hours[c] <= min_h + SHIFT_HOURS] 
+                pick = random.choice(best_candidates)
+            else:
+                pick = random.choice(range(N_EMP)) # Fallback
+                
             genome[i] = pick
             used_by_day[day].add(pick)
             hours[pick] += SHIFT_HOURS
         return genome
 
+    def get_hours_array(genome):
+        h = [0] * N_EMP
+        for eid in genome:
+            h[eid] += SHIFT_HOURS
+        return h
+
+    # [ALGO UPGRADE 2] Smart Repair
+    # When filling a gap, prefer the person who is most "behind" on their hours.
     def repair(genome):
+        current_hours = get_hours_array(genome)
+        
         for d in DAYS:
             used = set()
             a,b = day_ranges[d]
             for i in range(a,b):
                 day,sh,g = slots[i]
                 eid = genome[i]
+                
                 bad = False
                 if eid in used: bad = True
                 if emp_group[eid] != g: bad = True
                 if not is_available(eid, day, sh): bad = True
+                
                 if not bad:
                     used.add(eid)
                     continue
+
+                # We need a new person
                 cand = candidates_for(day, sh, g, used)
-                new_eid = random.choice(cand)
+                
+                if cand:
+                    # Sort candidates by current workload (ascending)
+                    cand_sorted = sorted(cand, key=lambda x: current_hours[x])
+                    # Pick from the top 3 least busy people
+                    new_eid = random.choice(cand_sorted[:3])
+                else:
+                    new_eid = random.choice(list(range(N_EMP)))
+                
+                # Update tracking (heuristic only)
+                current_hours[new_eid] += SHIFT_HOURS
+                if genome[i] < N_EMP:
+                     current_hours[genome[i]] = max(0, current_hours[genome[i]] - SHIFT_HOURS)
+                
                 genome[i] = new_eid
                 used.add(new_eid)
+                
         return genome
 
     def evaluate(genome):
@@ -208,6 +247,7 @@ def run_optimization(avail_df, demand_df, progress_bar, w_unavailable, w_double_
         hours = [0]*N_EMP
         unavailable = 0
         wrong_group = 0
+        
         for i,eid in enumerate(genome):
             day,sh,g = slots[i]
             used_by_day[day].append(eid)
@@ -227,17 +267,29 @@ def run_optimization(avail_df, demand_df, progress_bar, w_unavailable, w_double_
             if h > emp_max[eid]: overtime_hours += (h - emp_max[eid])
             if h < emp_min[eid]: under_min_hours += (emp_min[eid] - h)
 
+        # Standard Deviation Calculation
+        active_hours = [h for h in hours if h > 0]
+        if len(active_hours) > 1:
+            std_dev = np.std(active_hours)
+        else:
+            std_dev = 0
+
         penalty = 0
-        penalty += 6000*wrong_group
-        penalty += w_unavailable * unavailable      # Uses passed argument
-        penalty += w_double_day * double_day        # Uses passed argument
-        penalty += w_overtime * overtime_hours      # Uses passed argument
-        penalty += w_under_min * under_min_hours    # Uses passed argument
+        penalty += 8000 * wrong_group
+        penalty += w_unavailable * unavailable
+        penalty += w_double_day * double_day
+        penalty += w_overtime * overtime_hours
+        penalty += w_under_min * under_min_hours
+        penalty += w_fairness * std_dev
         
         return -penalty, {
-            "wrong_group": wrong_group, "unavailable": unavailable, 
-            "double_day": double_day, "overtime": overtime_hours, 
-            "under_min": under_min_hours, "penalty": penalty
+            "wrong_group": wrong_group, 
+            "unavailable": unavailable, 
+            "double_day": double_day, 
+            "overtime": overtime_hours, 
+            "under_min": under_min_hours, 
+            "std_dev": round(std_dev, 2),
+            "penalty": penalty
         }
 
     def tournament_select(pop, fits, k=4):
@@ -255,15 +307,49 @@ def run_optimization(avail_df, demand_df, progress_bar, w_unavailable, w_double_
         c1[cut_pos:], c2[cut_pos:] = c2[cut_pos:], c1[cut_pos:]
         return c1, c2
 
-    def mutate(genome):
+    # [ALGO UPGRADE 3] Robin Hood Mutation
+    # Take from the rich (overworked), give to the poor (underworked).
+    def mutate_robin_hood(genome):
         if random.random() > MUTATION_RATE: return genome
-        if random.random() < 0.5:
-            i, j = random.randrange(NUM_SLOTS), random.randrange(NUM_SLOTS)
-            genome[i], genome[j] = genome[j], genome[i]
-        else:
-            i = random.randrange(NUM_SLOTS)
-            day,sh,g = slots[i]
-            genome[i] = random.choice(candidates_for(day, sh, g, used_set=set()))
+        
+        # 1. Calculate current hours
+        hours = get_hours_array(genome)
+        
+        # 2. Identify "Rich" (Overworked) and "Poor" (Underworked)
+        # We need indices of employees, sorted by hours
+        emp_indices = list(range(N_EMP))
+        random.shuffle(emp_indices) # Shuffle first to break ties randomly
+        sorted_emps = sorted(emp_indices, key=lambda x: hours[x])
+        
+        poor_emp = sorted_emps[0] # Lowest hours
+        rich_emp = sorted_emps[-1] # Highest hours
+        
+        if hours[rich_emp] <= hours[poor_emp]:
+            return genome # Population is perfectly balanced, no op
+            
+        # 3. Find a shift belonging to Rich Emp
+        rich_indices = [i for i, x in enumerate(genome) if x == rich_emp]
+        if not rich_indices: return genome
+        
+        # Try to give one of Rich Emp's shifts to Poor Emp
+        slot_idx = random.choice(rich_indices)
+        day, sh, g = slots[slot_idx]
+        
+        # Check if Poor Emp can take this shift (Availability & Group)
+        # We also check if Poor Emp is already working that day to avoid double shift
+        
+        # Get set of employees working on this specific day in the genome
+        d_range = day_ranges[day]
+        emps_this_day = set(genome[d_range[0]:d_range[1]])
+        
+        can_take = True
+        if emp_group[poor_emp] != g: can_take = False
+        if not is_available(poor_emp, day, sh): can_take = False
+        if poor_emp in emps_this_day: can_take = False # Avoid double shift creation
+        
+        if can_take:
+            genome[slot_idx] = poor_emp # SWAP!
+            
         return genome
 
     # --- 3. RUN GA ---
@@ -285,10 +371,9 @@ def run_optimization(avail_df, demand_df, progress_bar, w_unavailable, w_double_
             best_g = pop[bi][:]
             best_det = dets[bi]
 
-        # Update Progress Bar
         progress_bar.progress(gen / GENERATIONS)
         if gen % 10 == 0:
-            status_text.text(f"Generation {gen}/{GENERATIONS} | Best Fitness: {best_f}")
+            status_text.text(f"Gen {gen} | Fit: {best_f:.0f} | StdDev: {best_det.get('std_dev', 0)}")
 
         elite_idx = sorted(range(len(pop)), key=lambda i: fits[i], reverse=True)[:ELITISM]
         new_pop = [pop[i][:] for i in elite_idx]
@@ -297,8 +382,11 @@ def run_optimization(avail_df, demand_df, progress_bar, w_unavailable, w_double_
             p1 = tournament_select(pop, fits)
             p2 = tournament_select(pop, fits)
             c1, c2 = day_block_crossover(p1, p2)
-            c1 = repair(mutate(c1))
-            c2 = repair(mutate(c2))
+            
+            # Use the new Robin Hood Mutation
+            c1 = repair(mutate_robin_hood(c1))
+            c2 = repair(mutate_robin_hood(c2))
+            
             new_pop.append(c1)
             if len(new_pop) < POP_SIZE: new_pop.append(c2)
         pop = new_pop
@@ -315,7 +403,6 @@ def run_optimization(avail_df, demand_df, progress_bar, w_unavailable, w_double_
         })
     df_long = pd.DataFrame(rows)
     
-    # Create Pivot
     df_pivot = (
         df_long.groupby(["day","shift","group"])["employee_name"]
         .apply(lambda x: ", ".join(x.tolist()))
@@ -341,7 +428,6 @@ if uploaded_file is not None:
     if st.button("🚀 Generate Optimized Schedule"):
         progress = st.progress(0)
         try:
-            # Pass all 4 weights from sidebar to the function
             long_df, pivot_df, details = run_optimization(
                 avail_df, 
                 demand_df, 
@@ -349,10 +435,10 @@ if uploaded_file is not None:
                 W_UNAVAILABLE, 
                 W_DOUBLE_DAY, 
                 W_OVERTIME, 
-                W_UNDER_MIN
+                W_UNDER_MIN,
+                W_FAIRNESS
             )
             
-            # Save to session state so it persists
             st.session_state['result_long'] = long_df
             st.session_state['result_pivot'] = pivot_df
             st.session_state['details'] = details
@@ -371,21 +457,19 @@ if 'result_long' in st.session_state:
     st.markdown("---")
     st.header("📊 Results Dashboard")
     
-    # Metrics
-    m1, m2, m3, m4 = st.columns(4)
+    m1, m2, m3, m4, m5 = st.columns(5)
     m1.metric("Penalty Score", f"{det['penalty']:.0f}")
-    m2.metric("Unavailbility Violations", det['unavailable'])
+    m2.metric("Unavailable", det['unavailable'])
     m3.metric("Double Shifts", det['double_day'])
-    m4.metric("Overtime Hours", det['overtime'])
+    m4.metric("Overtime Hrs", det['overtime'])
+    m5.metric("Hr Variance (StdDev)", f"{det.get('std_dev',0):.2f}")
     
-    # Tabs
     tab1, tab2, tab3 = st.tabs(["📅 Weekly View", "📋 List View", "📈 Employee Stats"])
     
     with tab1:
         st.subheader("Weekly Schedule Grid")
         st.dataframe(st.session_state['result_pivot'], use_container_width=True)
         
-        # Download Button
         buffer = io.BytesIO()
         with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
             st.session_state['result_pivot'].to_excel(writer, sheet_name='Schedule')
@@ -404,4 +488,7 @@ if 'result_long' in st.session_state:
         df = st.session_state['result_long']
         counts = df['employee_name'].value_counts().reset_index()
         counts.columns = ['Employee', 'Shifts']
-        st.bar_chart(counts, x='Employee', y='Shifts')
+        counts['Hours'] = counts['Shifts'] * 8
+        
+        st.subheader("Workload Distribution")
+        st.bar_chart(counts, x='Employee', y='Hours')
