@@ -8,9 +8,10 @@ import io
 # ==========================================
 # 1. PAGE CONFIGURATION
 # ==========================================
-st.set_page_config(page_title="Genetic Scheduler: Balanced Edition", layout="wide")
+st.set_page_config(page_title="Genetic Scheduler: Detective Edition", layout="wide")
 
-st.title("🧬 AI Employee Scheduler (Balanced)")
+st.title("🧬 AI Employee Scheduler (with Penalty Detective)")
+st.markdown("I added a **'Penalty Explanation'** tab to the results. It lists every specific rule violation so you know exactly why the score is high.")
 
 # ==========================================
 # 2. SIDEBAR - PARAMETERS
@@ -26,14 +27,12 @@ MUTATION_RATE = st.sidebar.slider("Mutation Rate", 0.0, 1.0, 0.3)
 ELITISM = st.sidebar.number_input("Elitism Count", 1, 10, 3)
 
 st.sidebar.markdown("---")
-st.sidebar.subheader("⚖️ Penalty Weights (Original)")
-# REVERTED TO ORIGINAL WEIGHTS
-W_UNAVAILABLE = st.sidebar.number_input("Unavailable Penalty", value=2500, help="Originally 2500")
-W_DOUBLE_DAY = st.sidebar.number_input("Double Shift Penalty", value=1800, help="Originally 1800")
-W_OVERTIME = st.sidebar.number_input("Overtime Penalty", value=80, help="Originally 80")
-W_UNDER_MIN = st.sidebar.number_input("Under Min Hours Penalty", value=30, help="Originally 30")
-# Kept small to not inflate score, but still guide the AI
-W_FAIRNESS = st.sidebar.number_input("Fairness (Variance) Penalty", value=50, help="Keeps workloads even.")
+st.sidebar.subheader("⚖️ Penalty Weights")
+W_UNAVAILABLE = st.sidebar.number_input("Unavailable Penalty", value=2500)
+W_DOUBLE_DAY = st.sidebar.number_input("Double Shift Penalty", value=1800)
+W_OVERTIME = st.sidebar.number_input("Overtime Penalty", value=80)
+W_UNDER_MIN = st.sidebar.number_input("Under Min Hours Penalty", value=30)
+W_FAIRNESS = st.sidebar.number_input("Fairness (Variance) Penalty", value=50)
 
 # ==========================================
 # 3. HELPER FUNCTIONS
@@ -48,8 +47,8 @@ def load_data(file):
     demand_df.columns = [c.strip() for c in demand_df.columns]
     return avail_df, demand_df
 
-# --- DATA AUDIT TO PROVE IMPOSSIBLE SHIFTS ---
-def run_audit(avail_df, demand_df):
+def run_pre_audit(avail_df, demand_df):
+    """Checks for impossible shortages BEFORE running the AI."""
     report = []
     DAYS = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"]
     
@@ -62,7 +61,6 @@ def run_audit(avail_df, demand_df):
         })
     df_emp = pd.DataFrame(employees)
     
-    # Map (Group, Day) -> Count of Available People
     avail_map = {(g, d): 0 for g in df_emp['group'].unique() for d in DAYS}
     for i, row in avail_df.iterrows():
         g = str(row.get("Group code", "all")).strip()
@@ -71,8 +69,6 @@ def run_audit(avail_df, demand_df):
             if val == "A":
                 avail_map[(g, d)] = avail_map.get((g, d), 0) + 1
 
-    # Check Demand vs Supply
-    # Fix header if needed
     if demand_df.iloc[0].astype(str).str.contains("Weekday", case=False).any():
         demand_df.columns = demand_df.iloc[0].astype(str).tolist()
         demand_df = demand_df.iloc[1:].reset_index(drop=True)
@@ -83,24 +79,16 @@ def run_audit(avail_df, demand_df):
     for _, row in demand_df.iterrows():
         day = str(row[weekday_col]).strip()
         if day not in DAYS: continue
-        
         for g in group_cols:
             group_name = str(g).strip()
             req = int(row.get(g, 0) if pd.notna(row.get(g, 0)) else 0)
-            
             available_count = avail_map.get((group_name, day), 0)
-            
             if req > available_count:
                 report.append({
-                    "Day": day,
-                    "Group": group_name,
-                    "Need": req,
-                    "Have": available_count,
-                    "Shortage": req - available_count
+                    "Day": day, "Group": group_name, "Need": req, 
+                    "Have": available_count, "Missing": req - available_count
                 })
-
     return pd.DataFrame(report)
-
 
 def run_optimization(avail_df, demand_df, progress_bar, w_unavailable, w_double_day, w_overtime, w_under_min, w_fairness):
     random.seed(7)
@@ -110,7 +98,6 @@ def run_optimization(avail_df, demand_df, progress_bar, w_unavailable, w_double_
     # --- PRE-PROCESSING ---
     employees = []
     name_to_id = {}
-    
     for i, row in avail_df.iterrows():
         name = str(row["Name"]).strip()
         if name not in name_to_id:
@@ -166,12 +153,10 @@ def run_optimization(avail_df, demand_df, progress_bar, w_unavailable, w_double_
     for _, row in demand_df.iterrows():
         day = str(row[weekday_col]).strip()
         if day not in DAYS: continue
-        
         for g in GROUPS:
             req_total = int(row.get(g, 0) if pd.notna(row.get(g, 0)) else 0)
             counts = [avail_count[(day, sh, g)] for sh in SHIFTS]
             total = sum(counts)
-            
             if req_total == 0:
                 for sh in SHIFTS: demand[(day, sh, g)] = 0
                 continue
@@ -179,7 +164,6 @@ def run_optimization(avail_df, demand_df, progress_bar, w_unavailable, w_double_
                 for sh in SHIFTS: demand[(day, sh, g)] = 0
                 demand[(day, SHIFTS[0], g)] = req_total
                 continue
-                
             raw = [req_total * (c / total) for c in counts]
             alloc = [int(x) for x in raw]
             remainder = req_total - sum(alloc)
@@ -256,19 +240,15 @@ def run_optimization(avail_df, demand_df, progress_bar, w_unavailable, w_double_
                 if eid in used: bad = True
                 if emp_group[eid] != g: bad = True
                 if not is_available(eid, day, sh): bad = True
-                
                 if not bad:
                     used.add(eid)
                     continue
-
                 cand = candidates_for(day, sh, g, used)
                 if cand:
                     cand_sorted = sorted(cand, key=lambda x: current_hours[x])
-                    # Prioritize underworked people
                     new_eid = random.choice(cand_sorted[:3])
                 else:
                     new_eid = random.choice(list(range(N_EMP)))
-                
                 current_hours[new_eid] += SHIFT_HOURS
                 if genome[i] < N_EMP:
                      current_hours[genome[i]] = max(0, current_hours[genome[i]] - SHIFT_HOURS)
@@ -281,32 +261,25 @@ def run_optimization(avail_df, demand_df, progress_bar, w_unavailable, w_double_
         hours = [0]*N_EMP
         unavailable = 0
         wrong_group = 0
-        
         for i,eid in enumerate(genome):
             day,sh,g = slots[i]
             used_by_day[day].append(eid)
             hours[eid] += SHIFT_HOURS
             if emp_group[eid] != g: wrong_group += 1
             if not is_available(eid, day, sh): unavailable += 1
-
         double_day = 0
         for d,arr in used_by_day.items():
             c = Counter(arr)
             for _,cnt in c.items():
                 if cnt > 1: double_day += (cnt-1)
-
         overtime_hours = 0
         under_min_hours = 0
         for eid,h in enumerate(hours):
             if h > emp_max[eid]: overtime_hours += (h - emp_max[eid])
             if h < emp_min[eid]: under_min_hours += (emp_min[eid] - h)
-
         active_hours = [h for h in hours if h > 0]
-        if len(active_hours) > 1:
-            std_dev = np.std(active_hours)
-        else:
-            std_dev = 0
-
+        if len(active_hours) > 1: std_dev = np.std(active_hours)
+        else: std_dev = 0
         penalty = 0
         penalty += 6000 * wrong_group
         penalty += w_unavailable * unavailable
@@ -314,16 +287,79 @@ def run_optimization(avail_df, demand_df, progress_bar, w_unavailable, w_double_
         penalty += w_overtime * overtime_hours
         penalty += w_under_min * under_min_hours
         penalty += w_fairness * std_dev
-        
         return -penalty, {
-            "wrong_group": wrong_group, 
-            "unavailable": unavailable, 
-            "double_day": double_day, 
-            "overtime": overtime_hours, 
-            "under_min": under_min_hours, 
-            "std_dev": round(std_dev, 2),
-            "penalty": penalty
+            "wrong_group": wrong_group, "unavailable": unavailable, 
+            "double_day": double_day, "overtime": overtime_hours, 
+            "under_min": under_min_hours, "std_dev": round(std_dev, 2), "penalty": penalty
         }
+    
+    # --- DETECTIVE FUNCTION ---
+    # This runs ONLY on the final best schedule to explain errors
+    def explain_penalties(genome):
+        violations = []
+        used_by_day = {d: [] for d in DAYS}
+        hours = [0]*N_EMP
+        
+        # 1. Slot Violations (Unavailable / Wrong Group)
+        for i, eid in enumerate(genome):
+            day, sh, g = slots[i]
+            emp_name = employees[eid]["name"]
+            used_by_day[day].append(emp_name)
+            hours[eid] += SHIFT_HOURS
+            
+            # Check Unavailable
+            if not is_available(eid, day, sh):
+                violations.append({
+                    "Type": "Unavailable",
+                    "Employee": emp_name,
+                    "Detail": f"Assigned {day} {sh} but is unavailable.",
+                    "Penalty Cost": w_unavailable
+                })
+            
+            # Check Group
+            if emp_group[eid] != g:
+                violations.append({
+                    "Type": "Wrong Group",
+                    "Employee": emp_name,
+                    "Detail": f"Assigned Group '{g}' but is Group '{emp_group[eid]}'.",
+                    "Penalty Cost": 6000
+                })
+
+        # 2. Daily Violations (Double Shift)
+        for d, names in used_by_day.items():
+            counts = Counter(names)
+            for name, count in counts.items():
+                if count > 1:
+                    violations.append({
+                        "Type": "Double Shift",
+                        "Employee": name,
+                        "Detail": f"Working {count} shifts on {d}.",
+                        "Penalty Cost": (count-1) * w_double_day
+                    })
+
+        # 3. Aggregate Violations (Overtime / Under Min)
+        for eid, h in enumerate(hours):
+            emp_name = employees[eid]["name"]
+            
+            if h > emp_max[eid]:
+                diff = h - emp_max[eid]
+                violations.append({
+                    "Type": "Overtime",
+                    "Employee": emp_name,
+                    "Detail": f"Worked {h}h (Max allowed: {emp_max[eid]}h).",
+                    "Penalty Cost": diff * w_overtime
+                })
+            
+            if h < emp_min[eid]:
+                diff = emp_min[eid] - h
+                violations.append({
+                    "Type": "Under Min Hours",
+                    "Employee": emp_name,
+                    "Detail": f"Worked {h}h (Min required: {emp_min[eid]}h).",
+                    "Penalty Cost": diff * w_under_min
+                })
+                
+        return pd.DataFrame(violations)
 
     def tournament_select(pop, fits, k=4):
         best_i = None; best_f = None
@@ -346,35 +382,24 @@ def run_optimization(avail_df, demand_df, progress_bar, w_unavailable, w_double_
         emp_indices = list(range(N_EMP))
         random.shuffle(emp_indices)
         sorted_emps = sorted(emp_indices, key=lambda x: hours[x])
-        
-        poor_emp = sorted_emps[0]
-        rich_emp = sorted_emps[-1]
-        
+        poor_emp = sorted_emps[0]; rich_emp = sorted_emps[-1]
         if hours[rich_emp] <= hours[poor_emp]: return genome
-            
         rich_indices = [i for i, x in enumerate(genome) if x == rich_emp]
         if not rich_indices: return genome
-        
         slot_idx = random.choice(rich_indices)
         day, sh, g = slots[slot_idx]
-        
         d_range = day_ranges[day]
         emps_this_day = set(genome[d_range[0]:d_range[1]])
-        
         can_take = True
         if emp_group[poor_emp] != g: can_take = False
         if not is_available(poor_emp, day, sh): can_take = False
         if poor_emp in emps_this_day: can_take = False
-        
-        if can_take:
-            genome[slot_idx] = poor_emp
-            
+        if can_take: genome[slot_idx] = poor_emp
         return genome
 
     # --- RUN GA ---
     pop = [repair(make_initial()) for _ in range(POP_SIZE)]
     best_g, best_f, best_det = None, float("-inf"), None
-
     status_text = st.empty()
     
     for gen in range(1, GENERATIONS+1):
@@ -383,20 +408,13 @@ def run_optimization(avail_df, demand_df, progress_bar, w_unavailable, w_double_
             f, d = evaluate(g)
             fits.append(f)
             dets.append(d)
-
         bi = max(range(len(pop)), key=lambda i: fits[i])
         if fits[bi] > best_f:
-            best_f = fits[bi]
-            best_g = pop[bi][:]
-            best_det = dets[bi]
-
+            best_f = fits[bi]; best_g = pop[bi][:]; best_det = dets[bi]
         progress_bar.progress(gen / GENERATIONS)
-        if gen % 10 == 0:
-            status_text.text(f"Gen {gen} | Fit: {best_f:.0f} | StdDev: {best_det.get('std_dev', 0)}")
-
+        if gen % 10 == 0: status_text.text(f"Gen {gen} | Fit: {best_f:.0f} | StdDev: {best_det.get('std_dev', 0)}")
         elite_idx = sorted(range(len(pop)), key=lambda i: fits[i], reverse=True)[:ELITISM]
         new_pop = [pop[i][:] for i in elite_idx]
-
         while len(new_pop) < POP_SIZE:
             p1 = tournament_select(pop, fits)
             p2 = tournament_select(pop, fits)
@@ -406,9 +424,9 @@ def run_optimization(avail_df, demand_df, progress_bar, w_unavailable, w_double_
             new_pop.append(c1)
             if len(new_pop) < POP_SIZE: new_pop.append(c2)
         pop = new_pop
-
     status_text.empty()
     
+    # Generate Output
     rows = []
     for i,eid in enumerate(best_g):
         day, sh, g = slots[i]
@@ -417,16 +435,14 @@ def run_optimization(avail_df, demand_df, progress_bar, w_unavailable, w_double_
             "employee_id": eid, "employee_name": employees[eid]["name"]
         })
     df_long = pd.DataFrame(rows)
-    
-    df_pivot = (
-        df_long.groupby(["day","shift","group"])["employee_name"]
-        .apply(lambda x: ", ".join(x.tolist()))
-        .reset_index()
-    )
+    df_pivot = df_long.groupby(["day","shift","group"])["employee_name"].apply(lambda x: ", ".join(x.tolist())).reset_index()
     df_pivot["col"] = df_pivot["group"].astype(str) + "_" + df_pivot["shift"].astype(str)
     df_pivot = df_pivot.pivot(index="day", columns="col", values="employee_name").reindex(DAYS).fillna("")
     
-    return df_long, df_pivot, best_det
+    # Run Explanation on Best Genome
+    explanation_df = explain_penalties(best_g)
+    
+    return df_long, df_pivot, best_det, explanation_df
 
 # ==========================================
 # 4. MAIN APP LOGIC
@@ -439,25 +455,20 @@ if uploaded_file is not None:
     c1, c2 = st.columns(2)
     with c1: 
         st.subheader("Availability")
-        # --- FIX: Removed .head(3) and increased height ---
-        st.dataframe(avail_df, height=400)
+        st.dataframe(avail_df, height=300)
     with c2: 
         st.subheader("Demand")
-        # --- FIX: Removed .head(3) and increased height ---
-        st.dataframe(demand_df, height=400)
+        st.dataframe(demand_df, height=300)
 
     # TABS FOR AUDIT VS RUN
-    tab_audit, tab_run = st.tabs(["🛡️ Data Audit (Why is penalty high?)", "🚀 Optimizer"])
+    tab_audit, tab_run = st.tabs(["🛡️ Pre-Check Audit", "🚀 Optimizer"])
     
     with tab_audit:
-        st.subheader("Sanity Check")
-        st.write("If the penalty is > 10,000, it's usually because you need more staff than you have available.")
-        if st.button("Run Data Audit"):
-            report_df = run_audit(avail_df, demand_df)
-            
+        st.subheader("Data Sanity Check")
+        if st.button("Run Pre-Check Audit"):
+            report_df = run_pre_audit(avail_df, demand_df)
             if not report_df.empty:
-                st.error(f"🚨 FOUND {len(report_df)} IMPOSSIBLE SHIFTS")
-                st.write(f"These {len(report_df)} shifts have 0 available candidates. Each costs {W_UNAVAILABLE} points.")
+                st.error(f"🚨 FOUND {len(report_df)} IMPOSSIBLE SHIFTS (Supply < Demand)")
                 st.dataframe(report_df, use_container_width=True)
             else:
                 st.success("✅ Data looks feasible! No obvious shortages.")
@@ -466,22 +477,15 @@ if uploaded_file is not None:
         if st.button("🚀 Start Optimization"):
             progress = st.progress(0)
             try:
-                long_df, pivot_df, details = run_optimization(
-                    avail_df, 
-                    demand_df, 
-                    progress, 
-                    W_UNAVAILABLE, 
-                    W_DOUBLE_DAY, 
-                    W_OVERTIME, 
-                    W_UNDER_MIN,
-                    W_FAIRNESS
+                long_df, pivot_df, details, explanation_df = run_optimization(
+                    avail_df, demand_df, progress, 
+                    W_UNAVAILABLE, W_DOUBLE_DAY, W_OVERTIME, W_UNDER_MIN, W_FAIRNESS
                 )
-                
                 st.session_state['result_long'] = long_df
                 st.session_state['result_pivot'] = pivot_df
                 st.session_state['details'] = details
+                st.session_state['explanation'] = explanation_df
                 st.success("Optimization Complete!")
-                
             except Exception as e:
                 st.error(f"An error occurred: {e}")
 
@@ -491,6 +495,7 @@ if uploaded_file is not None:
 
 if 'result_long' in st.session_state:
     det = st.session_state['details']
+    explain_df = st.session_state['explanation']
     
     st.markdown("---")
     st.header("📊 Results Dashboard")
@@ -502,22 +507,14 @@ if 'result_long' in st.session_state:
     m4.metric("Overtime Hrs", det['overtime'])
     m5.metric("Hr Variance", f"{det.get('std_dev',0):.2f}")
     
-    tab1, tab2, tab3 = st.tabs(["📅 Weekly View", "📋 List View", "📈 Employee Stats"])
+    tab1, tab2, tab3, tab4 = st.tabs(["📅 Weekly View", "📋 List View", "📈 Employee Stats", "🔍 Penalty Explanation"])
     
     with tab1:
-        st.subheader("Weekly Schedule Grid")
         st.dataframe(st.session_state['result_pivot'], use_container_width=True)
-        
         buffer = io.BytesIO()
         with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
             st.session_state['result_pivot'].to_excel(writer, sheet_name='Schedule')
-        
-        st.download_button(
-            label="Download Schedule as Excel",
-            data=buffer,
-            file_name="optimized_schedule.xlsx",
-            mime="application/vnd.ms-excel"
-        )
+        st.download_button(label="Download Schedule", data=buffer, file_name="optimized_schedule.xlsx", mime="application/vnd.ms-excel")
 
     with tab2:
         st.dataframe(st.session_state['result_long'], use_container_width=True)
@@ -527,6 +524,13 @@ if 'result_long' in st.session_state:
         counts = df['employee_name'].value_counts().reset_index()
         counts.columns = ['Employee', 'Shifts']
         counts['Hours'] = counts['Shifts'] * 8
-        
-        st.subheader("Workload Distribution")
         st.bar_chart(counts, x='Employee', y='Hours')
+
+    with tab4:
+        st.subheader("Why did I get this penalty score?")
+        if not explain_df.empty:
+            st.dataframe(explain_df, use_container_width=True)
+            total_explained = explain_df["Penalty Cost"].sum()
+            st.info(f"These violations account for **{total_explained:.0f}** points of your total penalty.")
+        else:
+            st.success("🎉 No specific violations found! (Penalty might be 0 or purely from Variance)")
